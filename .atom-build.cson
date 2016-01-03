@@ -1,0 +1,3 @@
+{
+    "cmd": "{PROJECT_PATH}/build.sh",
+}
