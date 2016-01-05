@@ -1,4 +1,44 @@
+#include <stdlib.h>
+
 #import <Cocoa/Cocoa.h>
+
+#define internal static
+#define local_persist static
+#define global_variable static
+
+global_variable CGColorSpaceRef ColorSpace;
+global_variable void *BitmapMemory;
+global_variable CGContextRef BitmapContext;
+
+internal void
+OSXResizeGraphicsContext(int Width, int Height) {
+    if (BitmapContext) {
+        CGContextRelease(BitmapContext);
+        free(BitmapMemory);
+    } else {
+        ColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceGenericRGB);
+    }
+
+    int BytesPerRow = (Width * 4);
+    int ByteCount = (BytesPerRow * Height);
+
+    BitmapMemory = calloc(ByteCount, 1);
+    BitmapContext = CGBitmapContextCreate(BitmapMemory, Width, Height, 8,
+                                          BytesPerRow, ColorSpace,
+                                          kCGImageAlphaPremultipliedLast);
+}
+
+internal void
+OSXUpdateWindow(CGContextRef Context, int X, int Y, int Width, int Height) {
+    if (!BitmapContext) {
+        OSXResizeGraphicsContext(Width, Height);
+    }
+
+    CGRect BoundingBox = CGRectMake (X, Y, Width, Height);
+    CGImageRef Image = CGBitmapContextCreateImage (BitmapContext);
+    CGContextDrawImage(Context, BoundingBox, Image);
+    CGImageRelease(Image);
+}
 
 @interface HandmadeView : NSView
 @end
@@ -8,19 +48,14 @@
 - (void)drawRect:(NSRect)dirtyRect {
     [super drawRect:dirtyRect];
 
-    static NSColor *Operation = [NSColor whiteColor];
-    [Operation set];
-    NSRectFill(dirtyRect);
-    if (Operation == [NSColor whiteColor]) {
-        Operation = [NSColor blackColor];
-    } else {
-        Operation = [NSColor whiteColor];
-    }
+    CGContextRef Context = (CGContextRef) [[NSGraphicsContext currentContext] graphicsPort];
+    OSXUpdateWindow(Context, dirtyRect.origin.x, dirtyRect.origin.y,
+                    dirtyRect.size.width, dirtyRect.size.height);
 }
 
 - (void)resizeWithOldSuperviewSize:(NSSize)oldBoundsSize
 {
-    printf("resizeWithOldSuperviewSize:\n");
+    OSXResizeGraphicsContext(oldBoundsSize.width, oldBoundsSize.height);
 }
 
 @end
@@ -58,8 +93,8 @@
 
 @end
 
-void OSXCreateMainMenu(NSApplication *app)
-{
+internal void
+OSXCreateMainMenu(NSApplication *app) {
 	NSMenu* menubar = [NSMenu new];
 
 	NSMenuItem* appMenuItem = [NSMenuItem new];
