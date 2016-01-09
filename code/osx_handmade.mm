@@ -16,61 +16,65 @@ typedef uint16_t uint16;
 typedef uint32_t uint32;
 typedef uint64_t uint64;
 
-global_variable bool Running;
+struct osx_offscreen_buffer {
+    CGColorSpaceRef ColorSpace;
+    CGContextRef Context;
+    void *Memory;
+    int Width;
+    int Height;
+    int Pitch;
+};
 
-global_variable CGColorSpaceRef ColorSpace;
-global_variable CGContextRef BitmapContext;
-global_variable void *BitmapMemory;
-global_variable int BitmapWidth;
-global_variable int BitmapHeight;
-global_variable int BytesPerPixel = 4;
+global_variable bool GlobalRunning;
+global_variable osx_offscreen_buffer GlobalBackBuffer;
 
 internal void
-RenderWeirdGradient(int BlueOffset, int GreenOffset) {
-    int Width = BitmapWidth;
-    int Pitch = Width*BytesPerPixel;
-    uint8 *Row = (uint8 *)BitmapMemory;
-    for (int Y = 0; Y < BitmapHeight; ++Y) {
+RenderWeirdGradient(osx_offscreen_buffer *Buffer,
+                    int BlueOffset, int GreenOffset) {
+    uint8 *Row = (uint8 *) Buffer->Memory;
+    for (int Y = 0; Y < Buffer->Height; ++Y) {
         uint32 *Pixel = (uint32 *) Row;
-        for (int X = 0; X < BitmapWidth; ++X) {
+        for (int X = 0; X < Buffer->Width; ++X) {
             uint8 Blue = (X + BlueOffset);
             uint8 Green = (Y + GreenOffset);
             *Pixel++ = ((Green << 8) | (Blue << 16));
         }
-        Row += Pitch;
+        Row += Buffer->Pitch;
     }
 }
 
 internal void
-OSXResizeGraphicsContext(int Width, int Height) {
-    if (BitmapContext) {
-        CGContextRelease(BitmapContext);
-        int BitmapMemorySize = BitmapWidth * BitmapHeight * BytesPerPixel;
-        munmap(BitmapMemory, BitmapMemorySize);
+OSXResizeGraphicsContext(osx_offscreen_buffer *Buffer, int Width, int Height) {
+    int BytesPerPixel = 4;
+
+    if (Buffer->Memory) {
+        CGContextRelease(Buffer->Context);
+        int BitmapMemorySize = Buffer->Width * Buffer->Height * BytesPerPixel;
+        munmap(Buffer->Memory, BitmapMemorySize);
     } else {
-        ColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceGenericRGB);
+        Buffer->ColorSpace = CGColorSpaceCreateWithName(kCGColorSpaceGenericRGB);
     }
 
-    BitmapWidth = Width;
-    BitmapHeight = Height;
+    Buffer->Width = Width;
+    Buffer->Height = Height;
 
-    int BitmapMemorySize = BitmapWidth * BitmapHeight * BytesPerPixel;
-    BitmapMemory = mmap(0, BitmapMemorySize, PROT_READ | PROT_WRITE,
-                        MAP_PRIVATE | MAP_ANON, -1, 0);
-    BitmapContext = CGBitmapContextCreate(BitmapMemory, Width, Height, 8,
-                                          BitmapWidth * BytesPerPixel,
-                                          ColorSpace,
-                                          kCGImageAlphaNoneSkipLast);
+    int BitmapMemorySize = Buffer->Width * Buffer->Height * BytesPerPixel;
+    Buffer->Memory = mmap(0, BitmapMemorySize, PROT_READ | PROT_WRITE,
+                          MAP_PRIVATE | MAP_ANON, -1, 0);
+    Buffer->Context = CGBitmapContextCreate(Buffer->Memory,
+                                            Buffer->Width, Buffer->Height, 8,
+                                            Buffer->Width * BytesPerPixel,
+                                            Buffer->ColorSpace,
+                                            kCGImageAlphaNoneSkipLast);
+    Buffer->Pitch = Buffer->Width * BytesPerPixel;
+    // TODO(coeuvre): Probably clear this to black.
 }
 
 internal void
-OSXUpdateWindow(CGContextRef Context, NSRect Bounds) {
-    if (!BitmapContext) {
-        OSXResizeGraphicsContext(Bounds.size.width, Bounds.size.height);
-    }
-
-    CGImageRef Image = CGBitmapContextCreateImage(BitmapContext);
-    CGContextDrawImage(Context, Bounds, Image);
+OSXDisplayBufferInWindow(CGContextRef Context, int WindowWidth, int WindowHeight,
+                         osx_offscreen_buffer *Buffer) {
+    CGImageRef Image = CGBitmapContextCreateImage(Buffer->Context);
+    CGContextDrawImage(Context, CGRectMake(0, 0, WindowWidth, WindowHeight), Image);
     CGImageRelease(Image);
 }
 
@@ -84,14 +88,21 @@ OSXUpdateWindow(CGContextRef Context, NSRect Bounds) {
 
     CGContextRef Context = (CGContextRef) [[NSGraphicsContext currentContext]
                                            graphicsPort];
-    OSXUpdateWindow(Context, self.bounds);
+    OSXDisplayBufferInWindow(Context, self.bounds.size.width, self.bounds.size.height,
+                             &GlobalBackBuffer);
 }
 
-- (void)resizeWithOldSuperviewSize:(NSSize)oldBoundsSize
-{
-    [super resizeWithOldSuperviewSize:oldBoundsSize];
+@end
 
-    OSXResizeGraphicsContext(self.bounds.size.width, self.bounds.size.height);
+@interface HandmadeWindowDelegate : NSObject<NSWindowDelegate>
+@end
+
+@implementation HandmadeWindowDelegate
+
+- (BOOL)windowShouldClose:(id)sender
+{
+    GlobalRunning = false;
+    return NO;
 }
 
 @end
@@ -133,13 +144,8 @@ OSXUpdateWindow(CGContextRef Context, NSRect Bounds) {
 
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)sender
 {
-    Running = false;
+    GlobalRunning = false;
     return NSTerminateCancel;
-}
-
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)theApplication
-{
-    return YES;
 }
 
 @end
@@ -170,6 +176,8 @@ OSXCreateMainMenu(NSApplication *app) {
 int main() {
     [[NSAutoreleasePool alloc] init];
 
+    OSXResizeGraphicsContext(&GlobalBackBuffer, 1280, 720);
+
     NSApplication *app = [NSApplication sharedApplication];
     [app setActivationPolicy:NSApplicationActivationPolicyRegular];
     [app setDelegate: [HandmadeAppDelegate new]];
@@ -184,6 +192,7 @@ int main() {
                                                    NSResizableWindowMask
                                          backing:NSBackingStoreBuffered
                                          defer:NO];
+    [window setDelegate:[HandmadeWindowDelegate new]];
     [window setTitle:@"Handmade Hero"];
     [window center];
 
@@ -203,8 +212,8 @@ int main() {
     int XOffset = 0;
     int YOffset = 0;
 
-    Running = true;
-    while (Running) {
+    GlobalRunning = true;
+    while (GlobalRunning) {
         NSEvent *event;
         while ((event = [NSApp nextEventMatchingMask:NSAnyEventMask
                                untilDate:nil
@@ -213,7 +222,7 @@ int main() {
             [NSApp sendEvent:event];
         }
 
-        RenderWeirdGradient(XOffset, YOffset);
+        RenderWeirdGradient(&GlobalBackBuffer, XOffset, YOffset);
 
         [view display];
 
