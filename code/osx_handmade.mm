@@ -1,5 +1,4 @@
 #import <Cocoa/Cocoa.h>
-
 #include <sys/mman.h>
 
 #define internal static
@@ -78,6 +77,45 @@ OSXDisplayBufferInWindow(CGContextRef Context, int WindowWidth, int WindowHeight
     CGImageRelease(Image);
 }
 
+internal void
+OSXProcessKeyboardMessage(NSEvent *Event) {
+    static bool KeyStates[256] = {false};
+
+    NSEventType Type = [Event type];
+
+    if (Type == NSKeyDown || Type == NSKeyUp) {
+        unsigned char Key = [[Event characters] UTF8String][0];
+        bool IsDown = false;
+        bool WasDown = false;
+
+        if (Type == NSKeyDown) {
+            if (KeyStates[Key]) {
+                WasDown = true;
+            }
+            KeyStates[Key] = true;
+            IsDown = true;
+        } else if (Type == NSKeyUp) {
+            KeyStates[Key] = false;
+            WasDown = true;
+        }
+
+        if (WasDown != IsDown) {
+            // Escape
+            if (Key == 27) {
+                printf("ESCAPE: ");
+                if (IsDown) {
+                    printf("IsDown\n");
+                }
+                if (WasDown) {
+                    printf("WasDown\n");
+                }
+            }
+        }
+    }
+
+    // TODO(coeuvre): Handle the flagsChanged event.
+}
+
 @interface HandmadeView : NSView
 @end
 
@@ -90,6 +128,26 @@ OSXDisplayBufferInWindow(CGContextRef Context, int WindowWidth, int WindowHeight
                                            graphicsPort];
     OSXDisplayBufferInWindow(Context, self.bounds.size.width, self.bounds.size.height,
                              &GlobalBackBuffer);
+}
+
+- (BOOL)acceptsFirstResponder
+{
+    return YES;
+}
+
+- (void)keyDown:(NSEvent *)theEvent
+{
+    OSXProcessKeyboardMessage(theEvent);
+}
+
+- (void)keyUp:(NSEvent *)theEvent
+{
+    OSXProcessKeyboardMessage(theEvent);
+}
+
+- (void)flagsChanged:(NSEvent *)theEvent
+{
+    OSXProcessKeyboardMessage(theEvent);
 }
 
 @end
@@ -221,6 +279,8 @@ int main() {
                                dequeue:YES])) {
             [NSApp sendEvent:event];
         }
+
+        // FIXME(coeuvre): No gamepad support for now.
 
         RenderWeirdGradient(&GlobalBackBuffer, XOffset, YOffset);
 
